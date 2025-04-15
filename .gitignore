@@ -1,0 +1,5 @@
+/.local/
+/.vscode/
+/build/
+
+.DS_Store

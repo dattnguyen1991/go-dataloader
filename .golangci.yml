@@ -1,0 +1,77 @@
+version: "2"
+
+issues:
+  new: false
+
+formatters:
+  enable:
+    - goimports
+    - golines
+
+  settings:
+    golines:
+      max-len: 120
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - revive
+    - ineffassign
+    - gocyclo
+    - dupl
+    - depguard
+    - prealloc
+    - whitespace
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+      settings:
+        shadow:
+          strict: true
+    depguard:
+      rules:
+        "non-main files":
+          files:
+            - "!**/main.go"
+          deny:
+            - pkg: log$
+              desc: Use log/slog instead, see https://go.dev/blog/slog
+
+  exclusions:
+    warn-unused: true
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - source: 'TODO'
+        linters: [ godot ]
+      - text: 'should have a package comment'
+        linters: [ revive ]
+      - text: "don't use an underscore in package name"
+        linters: [ revive ]
+      - text: 'exported \S+ \S+ should have comment( \(or a comment on this block\))? or be unexported'
+        linters: [ revive ]
+      - text: 'package comment should be of the form ".+"'
+        source: '// ?(nolint|TODO)'
+        linters: [ revive ]
+      - text: 'comment on exported \S+ \S+ should be of the form ".+"'
+        source: '// ?(nolint|TODO)'
+        linters: [ revive, staticcheck ]
+      - path: '_test\.go'
+        linters:
+          - bodyclose
+          - dupl
+          - errcheck
+          - funlen
+          - goconst
+          - gosec
+          - noctx
+          - wrapcheck
+    paths:
+      - '.*/test/.*\.go'

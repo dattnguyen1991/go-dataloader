@@ -1,0 +1,37 @@
+{
+  "name": "Go DataLoader Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/go:1.22",
+  "workspaceFolder": "/workspaces/go-dataloader",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-vscode.vscode-json",
+        "redhat.vscode-yaml",
+        "ms-vscode.makefile-tools",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "go.formatTool": "goimports",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.organizeImports": "explicit"
+        },
+        "[go]": {
+          "editor.insertSpaces": false,
+          "editor.tabSize": 4,
+          "editor.detectIndentation": false
+        }
+      }
+    }
+  },
+  "postCreateCommand": "go mod tidy && go mod download"
+}
