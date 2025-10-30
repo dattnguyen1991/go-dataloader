@@ -136,6 +136,10 @@ loader, _ := dataloader.NewDataLoader(
 )
 ```
 
+## Performance
+
+📊 **[View Detailed Performance Analysis](benchmarks/pef-analysis-summary.md)**
+
 ## Configuration
 
 ### Batch Settings

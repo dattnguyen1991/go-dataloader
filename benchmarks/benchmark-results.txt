@@ -1,0 +1,21 @@
+Single load (no batching): 100k loads took: 444.633417ms - fetch 100000 times
+Concurrent batching: 100k loads took: 204.619208ms - fetch 1000 times
+goos: darwin
+goarch: arm64
+pkg: github.com/dattnguyen1991/go-dataloader/pkg/dataloader
+cpu: [REDACTED]
+BenchmarkBaseline_IndividualCalls-12             	     100	  10901404 ns/op	       100.0 fetch_calls	         1.000 keys_per_call	       100.0 total_keys	      18 B/op	       1 allocs/op
+BenchmarkFetchCallReduction/no_batching_size_1-12         	     946	   1292222 ns/op	         1.057 fetch_calls_per_iter	         1.000 keys_per_call	  732342 B/op	   12013 allocs/op
+BenchmarkFetchCallReduction/optimal_batching_size_100-12  	    1460	    819393 ns/op	         0.006849 fetch_calls_per_iter	       100.0 keys_per_call	  188316 B/op	    3186 allocs/op
+BenchmarkLatencyThroughput/high_latency_no_batching-12    	      22	  51291068 ns/op	       500.0 fetch_calls	      9709 requests_per_sec	  426702 B/op	    6615 allocs/op
+BenchmarkLatencyThroughput/high_latency_optimal_batching-12         	      22	  51096155 ns/op	        10.00 fetch_calls	      9758 requests_per_sec	  109311 B/op	    1788 allocs/op
+BenchmarkScalability/batch_1_concurrent_100-12                      	      57	  20615999 ns/op	         1.000 batching_efficiency	       100.0 fetch_calls	         1.000 keys_per_call	      4834 requests_per_sec	   88662 B/op	    1323 allocs/op
+BenchmarkScalability/batch_10_concurrent_100-12                     	      57	  20557468 ns/op	        10.00 batching_efficiency	        10.00 fetch_calls	        10.00 keys_per_call	      4855 requests_per_sec	   29053 B/op	     454 allocs/op
+BenchmarkScalability/batch_50_concurrent_100-12                     	      57	  20561699 ns/op	        50.00 batching_efficiency	         2.000 fetch_calls	        50.00 keys_per_call	      4883 requests_per_sec	   26227 B/op	     358 allocs/op
+BenchmarkScalability/batch_100_concurrent_100-12                    	      57	  20616914 ns/op	       100.0 batching_efficiency	         1.000 fetch_calls	       100.0 keys_per_call	      4845 requests_per_sec	   23189 B/op	     342 allocs/op
+BenchmarkScalability/batch_50_concurrent_1000-12                    	      57	  21064376 ns/op	        50.00 batching_efficiency	        20.00 fetch_calls	        50.00 keys_per_call	     47773 requests_per_sec	  240446 B/op	    3428 allocs/op
+BenchmarkScalability/batch_100_concurrent_1000-12                   	      55	  21328645 ns/op	       100.0 batching_efficiency	        10.00 fetch_calls	       100.0 keys_per_call	     47042 requests_per_sec	  244045 B/op	    3278 allocs/op
+BenchmarkMemoryEfficiency_HighConcurrency-12                        	    5893	    188523 ns/op	        11.98 keys_per_call	     156 B/op	       2 allocs/op
+BenchmarkMappedFetch_ConcurrentLoad_Legacy-12                       	 1642378	      1162 ns/op	     16455 fetch_calls	        99.81 keys_per_call	      80 B/op	       1 allocs/op
+PASS
+ok  	github.com/dattnguyen1991/go-dataloader/pkg/dataloader	18.088s
