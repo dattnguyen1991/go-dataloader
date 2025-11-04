@@ -31,7 +31,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/dattnguyen1991/go-dataloader/pkg/dataloader"
+    "github.com/dattnguyen1991/go-dataloader"
 )
 
 type UserID int
