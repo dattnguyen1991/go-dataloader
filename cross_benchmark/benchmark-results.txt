@@ -1,0 +1,15 @@
+goos: linux
+goarch: arm64
+pkg: github.com/dattnguyen1991/go-dataloader/benchmark
+BenchmarkSequential/vikstrous-12         	  307083	     23159 ns/op	   11038 B/op	     218 allocs/op
+BenchmarkSequential/dattnguyen1991-12    	  313402	     18897 ns/op	   10505 B/op	     210 allocs/op
+BenchmarkConcurrently/baseline/vikstrous-12         	  228638	     28226 ns/op	   12688 B/op	     318 allocs/op
+BenchmarkConcurrently/baseline/dattnguyen1991-12    	  246154	     25056 ns/op	   12159 B/op	     311 allocs/op
+BenchmarkConcurrently/baseline/vikstrous_mapFetch-12         	  184836	     32308 ns/op	   22503 B/op	     327 allocs/op
+BenchmarkConcurrently/baseline/dattnguyen1991_mapFetch-12    	  228902	     27857 ns/op	   22068 B/op	     320 allocs/op
+BenchmarkConcurrently/parallelism_200/vikstrous-12           	  281046	     20521 ns/op	   12669 B/op	     318 allocs/op
+BenchmarkConcurrently/parallelism_200/dattnguyen1991-12      	  327783	     16721 ns/op	   12113 B/op	     310 allocs/op
+BenchmarkConcurrently/parallelism_200/vikstrous_mapFetch-12  	  256497	     23618 ns/op	   22445 B/op	     327 allocs/op
+BenchmarkConcurrently/parallelism_200/dattnguyen1991_mapFetch-12         	  299278	     19814 ns/op	   22007 B/op	     320 allocs/op
+PASS
+ok  	github.com/dattnguyen1991/go-dataloader/benchmark	68.707s

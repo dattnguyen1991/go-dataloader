@@ -9,12 +9,11 @@ import (
 )
 
 type DataLoader[K comparable, V any] struct {
-	// Channel for request coordination
-	requestChan chan *LoadRequest[K, V]
+	// Current batch being collected
+	currentBatch *LoadBatch[K, V]
 
 	// Object pools for zero-allocation operation
-	requestPool  *sync.Pool
-	responsePool *sync.Pool
+	keysPool *sync.Pool
 
 	// Configuration
 	batchSize       int
@@ -22,63 +21,48 @@ type DataLoader[K comparable, V any] struct {
 	arrayFetchFunc  func(context.Context, []K) ([]V, []error)
 	mappedFetchFunc func(context.Context, []K) (map[K]V, error)
 
-	// Lifecycle
-	loaderCtx    context.Context
-	loaderCancel context.CancelFunc
+	// batch mutex
+	mu sync.Mutex
 }
 
-// LoadRequest objects to eliminate allocations
-type LoadRequest[K comparable, V any] struct {
-	Key      K
-	Response *LoadResponse[V]
-	BatchPos int
-}
+type LoadBatch[K comparable, V any] struct {
+	// Prefer SoA as it is more cache friendly
+	keys      []K
+	responses []V
+	errors    []error
 
-type LoadResponse[V any] struct {
-	Ready chan struct{}
-	Value V
-	Error error
+	isDispatched bool // whether the batch has been dispatched
+	done         chan struct{}
 }
 
 func NewDataLoader[K comparable, V any](
-	options ...Option[K, V],
+	fetchFnOpt func(*DataLoader[K, V]),
+	opts ...Option,
 ) (*DataLoader[K, V], error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	dl := &DataLoader[K, V]{
-		requestChan: make(chan *LoadRequest[K, V], 10_000),
-		batchSize:   100,
-		batchWait:   10 * time.Millisecond,
+	dl := &DataLoader[K, V]{}
+	fetchFnOpt(dl)
 
-		loaderCtx:    ctx,
-		loaderCancel: cancel,
+	options := &Options{
+		batchSize: 100,
+		batchWait: 10 * time.Millisecond,
 	}
 
-	for _, opt := range options {
-		opt(dl)
+	for _, opt := range opts {
+		opt(options)
 	}
+
+	dl.batchSize = options.batchSize
+	dl.batchWait = options.batchWait
 
 	// Initialize object pools
-	dl.requestPool = &sync.Pool{
-		New: func() any {
-			return &LoadRequest[K, V]{}
-		},
-	}
-
-	dl.responsePool = &sync.Pool{
-		New: func() any {
-			return &LoadResponse[V]{
-				Ready: make(chan struct{}, 1), // Buffered to avoid blocking
-			}
-		},
+	dl.keysPool = &sync.Pool{
+		New: func() any { return make([]K, 0, dl.batchSize) },
 	}
 
 	// Validation
 	if dl.arrayFetchFunc == nil && dl.mappedFetchFunc == nil {
 		return nil, errors.New("DataLoader must be configured with either an array or mapped fetch function")
 	}
-
-	// Start batch processor
-	go dl.start()
 
 	return dl, nil
 }
@@ -87,224 +71,155 @@ func NewDataLoader[K comparable, V any](
 // blocking waits for the result or context cancellation then return the result
 // wait time = batchWait (configured via WithBatchWait) + fetchFunc's execution time
 func (dl *DataLoader[K, V]) Load(ctx context.Context, key K) (V, error) {
-	req, res := dl.queueRequest(ctx, key)
+	batch, pos := dl.queueRequest(ctx, key)
 
-	// Wait for result
-	return dl.loadResult(ctx, req, res)
+	select {
+	case <-ctx.Done():
+		var zeroV V
+		return zeroV, ctx.Err()
+	case <-batch.done: // wait for batch to be processed
+	}
+
+	return batch.responses[pos], batch.errors[pos]
 }
 
 // LoadThunk loads a single key, batching with other requests as needed
 // returns a thunk function that can be called later to get the result
 func (dl *DataLoader[K, V]) LoadThunk(ctx context.Context, key K) func() (V, error) {
-	req, res := dl.queueRequest(ctx, key)
+	batch, pos := dl.queueRequest(ctx, key)
 
 	return func() (V, error) {
-		return dl.loadResult(ctx, req, res)
+		select {
+		case <-ctx.Done():
+			var zeroV V
+			return zeroV, ctx.Err()
+		case <-batch.done: // wait for batch to be processed
+		}
+
+		return batch.responses[pos], batch.errors[pos]
 	}
 }
 
-func (dl *DataLoader[K, V]) queueRequest(ctx context.Context, key K) (req *LoadRequest[K, V], res *LoadResponse[V]) {
-	// Get pooled objects
-	req = dl.getPooledRequest()
-	res = dl.getPooledResponse()
+func (dl *DataLoader[K, V]) queueRequest(_ context.Context, key K) (batch *LoadBatch[K, V], batchPos int) {
+	// As long as the rest of queueRequest is not blocked for too long,
+	// we choose to use mutex over semaphore (which support context cancellation)
+	// for better performance under high concurrency
+	dl.mu.Lock()
 
-	// Initialize request
-	req.Key = key
-	req.Response = res
-
-	select {
-	case dl.requestChan <- req:
-		// Request queued successfully
-	case <-ctx.Done():
-		dl.returnToPool(req, res)
-		res.Error = ctx.Err()
-
-		// Signal completion to caller without blocking (channel size 1)
-		select {
-		case res.Ready <- struct{}{}:
-		default:
-			// Channel already signaled, ignore
-		}
-
-		// FIXME: Consider adding a max wait time to avoid overload that causes queuing stuck forever
-		// case <-time.After(dl.maxWaitTime):  // Optional: Max wait time to enqueue
-		// 	return zero, ErrSystemOverloaded
-		// }
+	batchPos = dl.upsertCurrentBatch(key)
+	batch = dl.currentBatch
+	if len(dl.currentBatch.keys) < dl.batchSize {
+		dl.mu.Unlock()
+		return
 	}
+
+	// Batch is full, process it
+	dl.currentBatch = nil
+	batch.isDispatched = true
+	dl.mu.Unlock()
+
+	go dl.executeBatch(batch)
 
 	return
 }
 
-func (dl *DataLoader[K, V]) loadResult(ctx context.Context, req *LoadRequest[K, V], res *LoadResponse[V]) (V, error) {
-	select {
-	case <-res.Ready:
-		value, err := res.Value, res.Error
-		dl.returnToPool(req, res)
-		return value, err
-	case <-ctx.Done():
-		dl.returnToPool(req, res)
-		var zero V
-		return zero, ctx.Err()
-	}
-}
+func (dl *DataLoader[K, V]) upsertCurrentBatch(key K) (batchPos int) {
+	if dl.currentBatch == nil {
+		dl.currentBatch = &LoadBatch[K, V]{
+			keys: dl.keysPool.Get().([]K)[:0],
+			done: make(chan struct{}),
+		}
 
-func (dl *DataLoader[K, V]) getPooledRequest() *LoadRequest[K, V] {
-	req := dl.requestPool.Get().(*LoadRequest[K, V])
+		// start go routine for batch timed out
+		go func(batch *LoadBatch[K, V]) {
+			time.Sleep(dl.batchWait)
+			dl.mu.Lock()
 
-	// Reset pooled value
-	// Must reset ALL fields of LoadRequest to avoid stale data
-	var zeroK K
-	req.Key = zeroK
-	req.Response = nil
-	req.BatchPos = 0
-
-	return req
-}
-
-func (dl *DataLoader[K, V]) getPooledResponse() *LoadResponse[V] {
-	resp := dl.responsePool.Get().(*LoadResponse[V])
-
-	// Reset pooled value
-	// Must reset ALL fields of LoadResponse to avoid stale data
-	var zeroV V
-	resp.Value = zeroV
-	resp.Error = nil
-
-	// Drain channel if needed
-	select {
-	case <-resp.Ready:
-	default:
-	}
-
-	return resp
-}
-
-func (dl *DataLoader[K, V]) returnToPool(req *LoadRequest[K, V], resp *LoadResponse[V]) {
-	dl.requestPool.Put(req)
-	dl.responsePool.Put(resp)
-}
-
-// start the batch processing loop
-func (dl *DataLoader[K, V]) start() {
-	for {
-		select {
-		case <-dl.loaderCtx.Done():
-			return // Clean exit from infinite loop
-		default:
-			batch := dl.collectBatch()
-			if len(batch) == 0 {
-				continue
+			if batch.isDispatched {
+				dl.mu.Unlock()
+				return
 			}
 
-			// Process batch in separate goroutine to avoid blocking collection
+			dl.currentBatch = nil // reset current batch to force create new batch
+			dl.mu.Unlock()
+
+			if len(batch.keys) == 0 {
+				return
+			}
+
+			// Process batch in separate goroutine
 			go dl.executeBatch(batch)
-		}
+		}(dl.currentBatch)
 	}
+
+	batchPos = len(dl.currentBatch.keys)
+	dl.currentBatch.keys = append(dl.currentBatch.keys, key)
+	return
 }
 
-func (dl *DataLoader[K, V]) Stop() {
-	dl.loaderCancel()
-}
-
-func (dl *DataLoader[K, V]) collectBatch() []*LoadRequest[K, V] {
-	// Pre-allocate batch slice
-	batch := make([]*LoadRequest[K, V], 0, dl.batchSize)
-
-	timer := time.NewTimer(dl.batchWait)
-	defer timer.Stop()
-
-	for {
-		// Gather requests until batch is full or window expires
-		select {
-		case req := <-dl.requestChan:
-			req.BatchPos = len(batch)
-			batch = append(batch, req)
-
-			if len(batch) >= dl.batchSize {
-				return batch // Batch full
-			}
-
-		case <-timer.C:
-			return batch // Window expired
-		}
-	}
-}
-
-func (dl *DataLoader[K, V]) executeBatch(batch []*LoadRequest[K, V]) {
-	if len(batch) == 0 {
-		return
-	}
-
-	keys := make([]K, len(batch))
-
-	for i, req := range batch {
-		keys[i] = req.Key
-	}
-
+func (dl *DataLoader[K, V]) executeBatch(loadBatch *LoadBatch[K, V]) {
 	if dl.arrayFetchFunc != nil { // Array Fetch
-		dl.executeArrayFetch(batch, keys)
+		dl.executeArrayFetch(loadBatch)
 	} else { // Mapped Fetch
-		dl.executeMappedFetch(batch, keys)
+		dl.executeMappedFetch(loadBatch)
 	}
+
+	close(loadBatch.done) // Signal completion to all callers
+
+	// Return keys to pools
+	// In case K is struct type, we dont want pool to keep references to elements so GC can reclaim memory
+	//nolint:staticcheck // SA6002: safe to pool slices here, we reuse the backing array
+	dl.keysPool.Put(loadBatch.keys[:0])
 }
 
-func (dl *DataLoader[K, V]) executeArrayFetch(
-	batch []*LoadRequest[K, V],
-	keys []K,
-) {
-	batchCtx := context.Background()
+func (dl *DataLoader[K, V]) executeArrayFetch(batch *LoadBatch[K, V]) {
 	// Execute Array fetch
-	values, errors := dl.safeArrayFetch(batchCtx, keys)
+	values, errors := dl.safeArrayFetch(context.Background(), batch.keys)
 
-	// If the fetch function returned the wrong number of responses, return an error to all callers
-	var valuesKeysLengthDiffErr error
-	var errorsKeysLengthDiffErr error
-	if len(values) != len(batch) {
-		valuesKeysLengthDiffErr = fmt.Errorf(
-			"fetch function implementation error: %d values returned for %d keys",
-			len(values),
-			len(keys),
+	// Defensive: ensure values and errors are not nil and have correct length
+	// If not, initialize them. Otherwise use as is
+	if values == nil || len(values) != len(batch.keys) {
+		values = make([]V, len(batch.keys))
+	}
+	if errors == nil || (len(errors) != 0 && len(errors) != len(batch.keys)) {
+		errors = make([]error, len(batch.keys))
+	}
+
+	// If the fetch function returned the wrong number of responses/errors, return an error to all callers
+	var fetchFnImplementationError error
+	if len(values) != len(batch.keys) {
+		fetchFnImplementationError = fmt.Errorf(
+			"fetch function implementation error: %d values returned for %d keys", len(values), len(batch.keys),
 		)
 	}
-	if len(errors) != 0 && len(errors) != len(batch) { // errors can be nil or same length as keys
-		errorsKeysLengthDiffErr = fmt.Errorf(
-			"fetch function implementation error: %d errors returned for %d keys",
-			len(errors),
-			len(keys),
+	if len(errors) != 0 && len(errors) != len(batch.keys) { // errors can be nil or same length as keys
+		fetchFnImplementationError = fmt.Errorf(
+			"fetch function implementation error: %d errors returned for %d keys", len(errors), len(batch.keys),
 		)
 	}
 
 	// Distribute results back to callers
-	for i, req := range batch {
-		resp := req.Response
+	batch.responses = values
+	batch.errors = errors
 
-		if valuesKeysLengthDiffErr != nil {
-			resp.Error = valuesKeysLengthDiffErr
-		} else if errorsKeysLengthDiffErr != nil {
-			resp.Error = errorsKeysLengthDiffErr
-		} else {
-			// Normal case
-			resp.Value = values[i]
-			resp.Error = errors[i]
-		}
-
-		// Signal completion to caller without blocking (channel size 1)
-		select {
-		case resp.Ready <- struct{}{}:
-		default:
-			// Channel already signaled, ignore
+	// Handle Error cases
+	if fetchFnImplementationError != nil {
+		for i := range batch.keys {
+			batch.errors[i] = fetchFnImplementationError
 		}
 	}
 }
 
-func (dl *DataLoader[K, V]) executeMappedFetch(
-	batch []*LoadRequest[K, V],
-	keys []K,
-) {
-	batchCtx := context.Background()
+func (dl *DataLoader[K, V]) executeMappedFetch(batch *LoadBatch[K, V]) {
+	// Bound check elimination
+	keys := batch.keys
+	keySize := len(keys)
+	responses := make([]V, keySize)
+	errs := make([]error, keySize)
+	// END Bound check elimination
 
 	// Execute Mapped fetch
-	mappedResponse, fetchErr := dl.safeMappedFetch(batchCtx, keys)
+	mappedResponse, fetchErr := dl.safeMappedFetch(context.Background(), keys)
 
 	var mappedErr MappedError[K]
 	// mappedFetchFunc can return either a single error or a MappedError
@@ -313,44 +228,36 @@ func (dl *DataLoader[K, V]) executeMappedFetch(
 	isMappedError := errors.As(fetchErr, &mappedErr)
 
 	// Extract Responses
-	for _, req := range batch {
-		resp := req.Response
+	for i := range keySize {
+		key := keys[i]
 		var foundResponse bool
 		if mappedResponse != nil {
-			resp.Value, foundResponse = mappedResponse[req.Key]
+			responses[i], foundResponse = mappedResponse[key]
 		}
 
 		if fetchErr == nil {
 			if !foundResponse {
-				resp.Error = ErrNotFound
+				errs[i] = ErrNotFound // if fetchFn did not return value for this key, default to not found error
 			}
 			continue
 		}
 
-		// Handle errors from fetch
+		// Handle errs from fetch
 		if !isMappedError {
 			// For single error, assign to all responses
-			resp.Error = fetchErr
+			errs[i] = fetchErr
 			continue
 		}
 
 		// For MappedError, check if this key has a specific error
-		if keyErr, hasError := mappedErr[req.Key]; hasError {
-			resp.Error = keyErr
+		if keyErr, hasError := mappedErr[key]; hasError {
+			errs[i] = keyErr
 		} else if !foundResponse {
-			resp.Error = ErrNotFound
+			errs[i] = ErrNotFound
 		}
 	}
-
-	// Distribute results back to callers
-	for _, req := range batch {
-		// Signal completion to caller without blocking (channel size 1)
-		select {
-		case req.Response.Ready <- struct{}{}:
-		default:
-			// Channel already signaled, ignore
-		}
-	}
+	batch.responses = responses
+	batch.errors = errs
 }
 
 func (dl *DataLoader[K, V]) safeArrayFetch(ctx context.Context, keys []K) (values []V, errs []error) {

@@ -5,28 +5,33 @@ import (
 	"time"
 )
 
+type Options struct {
+	batchSize int
+	batchWait time.Duration
+}
+
 // Option allows for configuration of loader fields.
-type Option[K comparable, V any] func(*DataLoader[K, V])
+type Option func(*Options)
 
 // WithBatchCapacity sets the batch capacity. Default is 100
-func WithBatchCapacity[K comparable, V any](capacity int) Option[K, V] {
-	return func(l *DataLoader[K, V]) {
-		l.batchSize = capacity
+func WithBatchCapacity(capacity int) Option {
+	return func(opt *Options) {
+		opt.batchSize = capacity
 	}
 }
 
 // WithBatchWait sets the amount of time to wait before triggering a batch.
 // Default duration is 10 milliseconds.
-func WithBatchWait[K comparable, V any](duration time.Duration) Option[K, V] {
-	return func(l *DataLoader[K, V]) {
-		l.batchWait = duration
+func WithBatchWait(duration time.Duration) Option {
+	return func(opt *Options) {
+		opt.batchWait = duration
 	}
 }
 
 // WithArrayFetchFunc set Array fetch function.
 func WithArrayFetchFunc[K comparable, V any](
 	fn func(ctx context.Context, keys []K) ([]V, []error),
-) Option[K, V] {
+) func(*DataLoader[K, V]) {
 	return func(l *DataLoader[K, V]) {
 		l.arrayFetchFunc = fn
 	}
@@ -35,7 +40,7 @@ func WithArrayFetchFunc[K comparable, V any](
 // WithMappedFetchFunc set Mapped fetch function.
 func WithMappedFetchFunc[K comparable, V any](
 	fn func(ctx context.Context, keys []K) (map[K]V, error),
-) Option[K, V] {
+) func(*DataLoader[K, V]) {
 	return func(l *DataLoader[K, V]) {
 		l.mappedFetchFunc = fn
 	}
