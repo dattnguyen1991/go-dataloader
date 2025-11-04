@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	dattnguyen1991DL "github.com/dattnguyen1991/go-dataloader/pkg/dataloader"
+	dattnguyen1991DL "github.com/dattnguyen1991/go-dataloader"
 	vikstrousDL "github.com/vikstrous/dataloadgen"
 )
 
@@ -121,7 +121,6 @@ func xBenchmarkMemoryEfficiency_Sequential(b *testing.B) {
 		dattnguyen1991DL.WithBatchCapacity(batchSize),
 		dattnguyen1991DL.WithBatchWait(batchWait),
 	)
-	defer dl.Stop()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -142,7 +141,6 @@ func xBenchmarkMemoryEfficiency_HighConcurrency(b *testing.B) {
 		dattnguyen1991DL.WithBatchCapacity(batchSize),
 		dattnguyen1991DL.WithBatchWait(batchWait),
 	)
-	defer dl.Stop()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -231,7 +229,6 @@ func BenchmarkConcurrently(b *testing.B) {
 
 		b.Run("dattnguyen1991", func(b *testing.B) {
 			dl := newDatNguyenDL()
-			defer dl.Stop()
 			b.ResetTimer()
 			var goroutineID int32
 
@@ -272,7 +269,6 @@ func BenchmarkConcurrently(b *testing.B) {
 
 		b.Run("dattnguyen1991_mapFetch", func(b *testing.B) {
 			dl := newDatNguyenDLMapFetch()
-			defer dl.Stop()
 			b.ResetTimer()
 			var goroutineID int32
 
@@ -317,7 +313,7 @@ func BenchmarkConcurrently(b *testing.B) {
 
 		b.Run("dattnguyen1991", func(b *testing.B) {
 			dl := newDatNguyenDL()
-			// defer dl.Stop()
+
 			b.SetParallelism(parrallelism)
 			b.ResetTimer()
 			var goroutineID int32
@@ -360,7 +356,7 @@ func BenchmarkConcurrently(b *testing.B) {
 
 		b.Run("dattnguyen1991_mapFetch", func(b *testing.B) {
 			dl := newDatNguyenDLMapFetch()
-			// defer dl.Stop()
+
 			b.SetParallelism(parrallelism)
 			b.ResetTimer()
 			var goroutineID int32
