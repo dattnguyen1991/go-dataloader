@@ -2,7 +2,7 @@
 
 A high-performance, generic DataLoader for Go that address the concurrent query problem through request batching and object pooling.
 
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.24.3-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/go-%3E%3D1.22.11-blue.svg)](https://golang.org/) [![Go Reference](https://pkg.go.dev/badge/github.com/dattnguyen1991/go-dataloader.svg)](https://pkg.go.dev/github.com/dattnguyen1991/go-dataloader)  [![Go Report Card](https://goreportcard.com/badge/github.com/dattnguyen1991/go-dataloader)](https://goreportcard.com/report/github.com/dattnguyen1991/go-dataloader) 
 
 ## Features
 
@@ -20,7 +20,7 @@ This library is especially useful when your data source has limitations such as 
 ## Installation
 
 ```bash
-go get github.com/dattnguyen1991/go-dataloader/pkg/dataloader
+go get github.com/dattnguyen1991/go-dataloader
 ```
 
 ## Quick Start
@@ -48,7 +48,6 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer loader.Stop()
     
     // Load users (automatically batched)
     ctx := context.Background()
@@ -79,31 +78,39 @@ func fetchUsers(ctx context.Context, ids []UserID) (map[UserID]User, error) {
 Returns a map of keys to values, allowing missing keys and per-key errors:
 
 ```go
+type batchUserInfo struct {
+    data User
+    err Error
+}
+
 func fetchUsers(ctx context.Context, ids []UserID) (map[UserID]User, error) {
     users := make(map[UserID]User)
     errors := make(dataloader.MappedError[UserID])
     
-    for _, id := range ids {
-        if id == 0 {
-            errors[id] = fmt.Errorf("invalid user ID: %d", id)
-            continue
-        }
-        
-        user, err := db.GetUser(ctx, id)
-        if err != nil {
-            if errors.Is(err, sql.ErrNoRows) {
-                // Missing keys automatically return dataloader.ErrNotFound
-                continue  
-            }
-            errors[id] = err
-            continue
-        }
-        
-        users[id] = user
+    // Batch fetch all users at once
+    batchUserInfoById, err := db.GetUsers(ctx, ids)
+    if err != nil {
+        // If the batch query itself fails, can simply return the error
+        // dataloader itself will map that error to all Key
+        return nil, err
     }
-    
+
+    for _, id := range ids {
+        userInfo, ok := batchUserInfoById[id]
+        if !ok {
+            // Not found from DB response, can skip this key in result
+            // dataLoader will return ErrNotFound for this key
+            continue
+        }
+        if err == nil {
+            users[id] = userInfo.data
+        } else {
+            errors[id] = userInfo.err   // Get Forbiden|User Deleted|Blacklisted
+        }
+    }
+
     if len(errors) > 0 {
-        return users, errors  // Return partial results with errors
+        return users, errors    // Return partial results with errors
     }
     return users, nil
 }
@@ -122,10 +129,14 @@ func fetchUsersArray(ctx context.Context, ids []UserID) ([]User, []error) {
     users := make([]User, len(ids))
     errs := make([]error, len(ids))
     
+    batchUserInfos, err := db.GetUsers(ctx, ids)
+    if err != nil {
+        return nil, err
+    }
+
     for i, id := range ids {
-        user, err := db.GetUser(ctx, id)
-        users[i] = user
-        errs[i] = err  // Can be nil
+        users[i] = batchUserInfos[i].data
+        errs[i] = batchUserInfos[i].err  // Can be nil
     }
     
     return users, errs
@@ -137,8 +148,28 @@ loader, _ := dataloader.NewDataLoader(
 ```
 
 ## Performance
+> go test -bench=. -benchmem  -benchtime=5s .
 
-📊 **[View Detailed Performance Analysis](benchmarks/pef-analysis-summary.md)**
+```
+goos: linux
+goarch: arm64
+pkg: github.com/dattnguyen1991/go-dataloader/benchmark
+BenchmarkSequential/vikstrous-12         	  307083	     23159 ns/op	   11038 B/op	     218 allocs/op
+BenchmarkSequential/dattnguyen1991-12    	  313402	     18897 ns/op	   10505 B/op	     210 allocs/op
+BenchmarkConcurrently/baseline/vikstrous-12         	  228638	     28226 ns/op	   12688 B/op	     318 allocs/op
+BenchmarkConcurrently/baseline/dattnguyen1991-12    	  246154	     25056 ns/op	   12159 B/op	     311 allocs/op
+BenchmarkConcurrently/baseline/vikstrous_mapFetch-12         	  184836	     32308 ns/op	   22503 B/op	     327 allocs/op
+BenchmarkConcurrently/baseline/dattnguyen1991_mapFetch-12    	  228902	     27857 ns/op	   22068 B/op	     320 allocs/op
+BenchmarkConcurrently/parallelism_200/vikstrous-12           	  281046	     20521 ns/op	   12669 B/op	     318 allocs/op
+BenchmarkConcurrently/parallelism_200/dattnguyen1991-12      	  327783	     16721 ns/op	   12113 B/op	     310 allocs/op
+BenchmarkConcurrently/parallelism_200/vikstrous_mapFetch-12  	  256497	     23618 ns/op	   22445 B/op	     327 allocs/op
+BenchmarkConcurrently/parallelism_200/dattnguyen1991_mapFetch-12         	  299278	     19814 ns/op	   22007 B/op	     320 allocs/op
+PASS
+ok  	github.com/dattnguyen1991/go-dataloader/benchmark	68.707s
+
+```
+
+📊 **[View cross benchmark summary](cross_benchmark/summary.md)**
 
 ## Configuration
 
@@ -147,24 +178,10 @@ loader, _ := dataloader.NewDataLoader(
 ```go
 loader, _ := dataloader.NewDataLoader(
     dataloader.WithMappedFetchFunc(fetchFunc),
-    dataloader.WithBatchCapacity[UserID, User](50),     // Batch size (default: 100)
-    dataloader.WithBatchWait[UserID, User](5*time.Millisecond), // Wait time (default: 10ms)
+    dataloader.WithBatchCapacity(50),     // Batch size (default: 100)
+    dataloader.WithBatchWait(5*time.Millisecond), // Wait time (default: 10ms)
 )
 ```
-
-### Performance Tuning
-
-| Batch Size | Use Case | Trade-offs |
-|------------|----------|------------|
-| **1-10** | Low latency, real-time | Higher overhead, more DB calls |
-| **50-200** | Balanced (recommended) | Good latency/throughput balance |
-| **500+** | High throughput, analytics | Higher latency, better batching |
-
-| Wait Time | Use Case | Trade-offs |
-|-----------|----------|------------|
-| **1-5ms** | Real-time applications | Lower batching efficiency |
-| **10-20ms** | Most applications | Optimal balance |
-| **50ms+** | Background processing | Higher latency |
 
 ## Error Handling
 
@@ -238,19 +255,6 @@ user2, err2 := userThunk2() // Already available (same batch)
 user3, err3 := userThunk3() // Already available (same batch)
 ```
 
-### Lifecycle Management
-
-```go
-loader, _ := dataloader.NewDataLoader(
-    dataloader.WithMappedFetchFunc(fetchFunc),
-)
-
-// Always clean up resources
-defer loader.Stop()
-
-// loader.Stop() safely shuts down background goroutines
-```
-
 ### Key-Value Types
 
 ```go
@@ -262,10 +266,10 @@ type Product struct {
 }
 
 productLoader, _ := dataloader.NewDataLoader(
-    dataloader.WithMappedFetchFunc[ProductSKU, Product](fetchProducts),
+    dataloader.WithMappedFetchFunc[string, Product](fetchProducts),
 )
 
-product, err := productLoader.Load(ctx, ProductSKU("ABC123"))
+product, err := productLoader.Load(ctx, "ABC123")
 ```
 
 ## Real-World Examples
@@ -291,21 +295,20 @@ func (r *UserResolver) Posts(ctx context.Context, userID UserID) ([]*Post, error
 In some applications, serving multiple concurrent tasks (such as HTTP requests) each load a single key, and we have slow backend/db or limit connection to data store. DataLoader batches these concurrent loads (within the same interval) into a single fetch, even across goroutines, reducing database calls and improving throughput.
 
 ```go
-func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
-    userID := getUserIDFromPath(r.URL.Path)
-    
-    // Concurrent requests to this endpoint are automatically batched
-    user, err := h.userLoader.Load(r.Context(), userID)
+func (h *Handler) GetProduct(c *gin.Context) {
+    productCode := c.Param("productCode")
+
+    product, err := h.productLoader.Load(c.Request.Context(), productCode)
     if errors.Is(err, dataloader.ErrNotFound) {
-        http.Error(w, "User not found", http.StatusNotFound)
+        c.JSON(http.StatusNotFound, gin.H{"error": "Prouct not found"})
         return
     }
     if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
-    
-    json.NewEncoder(w).Encode(user)
+
+    c.JSON(http.StatusOK, product)
 }
 ```
 
@@ -315,15 +318,13 @@ func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 
 ```go
 type DataLoader[K comparable, V any] struct { /* ... */ }
-type LoadRequest[K comparable, V any] struct { /* ... */ }  
-type LoadResponse[V any] struct { /* ... */ }
 type MappedError[K comparable] map[K]error
 ```
 
 ### Constructor
 
 ```go
-func NewDataLoader[K comparable, V any](options ...Option[K, V]) (*DataLoader[K, V], error)
+func NewDataLoader[K comparable, V any](fetchFnOpt func(*DataLoader[K, V]), opts ...Option) (*DataLoader[K, V], error)
 ```
 
 ### Methods
@@ -331,16 +332,18 @@ func NewDataLoader[K comparable, V any](options ...Option[K, V]) (*DataLoader[K,
 ```go
 func (dl *DataLoader[K, V]) Load(ctx context.Context, key K) (V, error)
 func (dl *DataLoader[K, V]) LoadThunk(ctx context.Context, key K) func() (V, error)
-func (dl *DataLoader[K, V]) Stop()
 ```
 
 ### Options
 
 ```go
-func WithBatchCapacity[K, V](capacity int) Option[K, V]
-func WithBatchWait[K, V](duration time.Duration) Option[K, V]  
+// fetchFnOpt func(*DataLoader[K, V])
 func WithArrayFetchFunc[K, V](fn func(context.Context, []K) ([]V, []error)) Option[K, V]
 func WithMappedFetchFunc[K, V](fn func(context.Context, []K) (map[K]V, error)) Option[K, V]
+
+// opts Option
+func WithBatchCapacity(capacity int) Option
+func WithBatchWait(duration time.Duration) Option  
 ```
 
 ### Error Types

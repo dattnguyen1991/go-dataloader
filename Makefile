@@ -3,5 +3,6 @@ lint:
 .PHONY: lint
 
 test:
-	go test ./...
-.PHONY: lint
+	go test ./... && \
+	go test -bench=. ./...
+.PHONY: test

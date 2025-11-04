@@ -72,44 +72,37 @@ func panicMappedFetch(_ context.Context, _ []UserID) (map[UserID]User, error) {
 func TestNewDataLoader_MappedFetch(t *testing.T) {
 	tests := []struct {
 		name        string
-		options     []Option[UserID, User]
+		fetchFnOpt  func(*DataLoader[UserID, User])
+		options     []Option
 		expectError bool
 		errorMsg    string
 	}{
 		{
-			name: "successful creation with mapped fetch",
-			options: []Option[UserID, User]{
-				WithMappedFetchFunc(successfulMappedFetch),
-			},
+			name:        "successful creation with mapped fetch",
+			fetchFnOpt:  WithMappedFetchFunc(successfulMappedFetch),
+			options:     []Option{},
 			expectError: false,
 		},
 		{
-			name: "successful creation with array fetch",
-			options: []Option[UserID, User]{
-				WithArrayFetchFunc(successfulArrayFetch),
-			},
+			name:        "successful creation with array fetch",
+			fetchFnOpt:  WithArrayFetchFunc(successfulArrayFetch),
+			options:     []Option{},
 			expectError: false,
 		},
 		{
-			name: "successful creation with custom batch settings",
-			options: []Option[UserID, User]{
-				WithMappedFetchFunc(successfulMappedFetch),
-				WithBatchCapacity[UserID, User](500),
-				WithBatchWait[UserID, User](5 * time.Millisecond),
+			name:       "successful creation with custom batch settings",
+			fetchFnOpt: WithMappedFetchFunc(successfulMappedFetch),
+			options: []Option{
+				WithBatchCapacity(500),
+				WithBatchWait(5 * time.Millisecond),
 			},
 			expectError: false,
-		},
-		{
-			name:        "error when no fetch function provided",
-			options:     []Option[UserID, User]{},
-			expectError: true,
-			errorMsg:    "DataLoader must be configured with either an array or mapped fetch function",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dl, err := NewDataLoader(tt.options...)
+			dl, err := NewDataLoader(tt.fetchFnOpt, tt.options...)
 
 			if tt.expectError {
 				if err == nil {
@@ -133,7 +126,6 @@ func TestNewDataLoader_MappedFetch(t *testing.T) {
 			}
 
 			// Clean shutdown
-			dl.Stop()
 		})
 	}
 }
@@ -142,10 +134,9 @@ func TestNewDataLoader_MappedFetch(t *testing.T) {
 func TestMappedFetch_Load(t *testing.T) {
 	dl, _ := NewDataLoader(
 		WithMappedFetchFunc(successfulMappedFetch),
-		WithBatchCapacity[UserID, User](100),
-		WithBatchWait[UserID, User](10*time.Millisecond),
+		WithBatchCapacity(100),
+		WithBatchWait(10*time.Millisecond),
 	)
-	defer dl.Stop()
 
 	t.Run("single load", func(t *testing.T) {
 		user, err := dl.Load(context.Background(), UserID(1))
@@ -195,10 +186,9 @@ func TestMappedFetch_Load(t *testing.T) {
 func TestMappedFetch_LoadThunk(t *testing.T) {
 	dl, _ := NewDataLoader(
 		WithMappedFetchFunc(successfulMappedFetch),
-		WithBatchCapacity[UserID, User](100),
-		WithBatchWait[UserID, User](10*time.Millisecond),
+		WithBatchCapacity(100),
+		WithBatchWait(10*time.Millisecond),
 	)
-	defer dl.Stop()
 
 	t.Run("single load", func(t *testing.T) {
 		thunk := dl.LoadThunk(context.Background(), UserID(1))
@@ -333,18 +323,16 @@ func TestMappedFetch_SimulateRealisticFetch(t *testing.T) {
 	concurentBatchSize := 100
 	dlConcurrent, _ := NewDataLoader(
 		WithMappedFetchFunc(simulateRealisticFetch),
-		WithBatchCapacity[UserID, User](concurentBatchSize),
-		WithBatchWait[UserID, User](10*time.Millisecond),
+		WithBatchCapacity(concurentBatchSize),
+		WithBatchWait(10*time.Millisecond),
 	)
-	defer dlConcurrent.Stop()
 
 	singlebatchSize := 1
 	dlSingle, _ := NewDataLoader(
 		WithMappedFetchFunc(simulateRealisticFetch),
-		WithBatchCapacity[UserID, User](singlebatchSize),
-		WithBatchWait[UserID, User](10*time.Millisecond),
+		WithBatchCapacity(singlebatchSize),
+		WithBatchWait(10*time.Millisecond),
 	)
-	defer dlSingle.Stop()
 
 	runTest(t, "Single load (no batching)", dlSingle, numLoads/singlebatchSize)
 	cnt.Store(0)
@@ -364,7 +352,6 @@ func TestMappedFetch_MissingKeys(t *testing.T) {
 		return result, nil
 	}
 	dl, _ := NewDataLoader(WithMappedFetchFunc(evenNumberSuccessMappedFetch))
-	defer dl.Stop()
 
 	t.Run("existing key", func(t *testing.T) {
 		user, err := dl.Load(context.Background(), UserID(2)) // Even number, should exist
@@ -393,7 +380,6 @@ func TestMappedFetch_ErrorHandling(t *testing.T) {
 			return nil, errors.New("database connection failed")
 		}
 		dl, _ := NewDataLoader(WithMappedFetchFunc(errorMappedFetch))
-		defer dl.Stop()
 
 		_, err := dl.Load(context.Background(), UserID(1))
 
@@ -408,7 +394,6 @@ func TestMappedFetch_ErrorHandling(t *testing.T) {
 
 	t.Run("mapped errors", func(t *testing.T) {
 		dl, _ := NewDataLoader(WithMappedFetchFunc(mappedErrorFetch))
-		defer dl.Stop()
 
 		// Test successful key (not divisible by 3)
 		user, err := dl.Load(context.Background(), UserID(1))
@@ -433,7 +418,6 @@ func TestMappedFetch_ErrorHandling(t *testing.T) {
 
 	t.Run("panic recovery", func(t *testing.T) {
 		dl, _ := NewDataLoader(WithMappedFetchFunc(panicMappedFetch))
-		defer dl.Stop()
 
 		_, err := dl.Load(context.Background(), UserID(1))
 
@@ -454,7 +438,6 @@ func TestMappedFetch_ContextCancellation(t *testing.T) {
 		return successfulMappedFetch(ctx, keys)
 	}
 	dl, _ := NewDataLoader(WithMappedFetchFunc(slowMappedFetch))
-	defer dl.Stop()
 
 	t.Run("context timeout during load", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
@@ -504,11 +487,9 @@ func TestMappedFetch_Batching(t *testing.T) {
 
 	dl, _ := NewDataLoader(
 		WithMappedFetchFunc(batchingFetch),
-		WithBatchCapacity[UserID, User](5),
-		WithBatchWait[UserID, User](20*time.Millisecond),
+		WithBatchCapacity(5),
+		WithBatchWait(20*time.Millisecond),
 	)
-
-	defer dl.Stop()
 
 	const numRequests = 10
 	// Fire off requests rapidly to trigger batching
@@ -551,9 +532,8 @@ func TestMappedFetch_ConfigurationOptions(t *testing.T) {
 	t.Run("custom batch capacity", func(t *testing.T) {
 		dl, _ := NewDataLoader(
 			WithMappedFetchFunc(successfulMappedFetch),
-			WithBatchCapacity[UserID, User](3),
+			WithBatchCapacity(3),
 		)
-		defer dl.Stop()
 
 		if dl.batchSize != 3 {
 			t.Errorf("expected batch size 3, got %d", dl.batchSize)
@@ -563,9 +543,8 @@ func TestMappedFetch_ConfigurationOptions(t *testing.T) {
 	t.Run("custom batch wait", func(t *testing.T) {
 		dl, _ := NewDataLoader(
 			WithMappedFetchFunc(successfulMappedFetch),
-			WithBatchWait[UserID, User](50*time.Millisecond),
+			WithBatchWait(50*time.Millisecond),
 		)
-		defer dl.Stop()
 
 		if dl.batchWait != 50*time.Millisecond {
 			t.Errorf("expected batch wait 50ms, got %v", dl.batchWait)

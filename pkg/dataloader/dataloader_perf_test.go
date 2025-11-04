@@ -102,11 +102,9 @@ func BenchmarkFetchCallReduction(b *testing.B) {
 
 			dl, _ := NewDataLoader(
 				WithMappedFetchFunc(fetchFunc),
-				WithBatchCapacity[PersonID, Person](batchSize), // Optimal batching
-				WithBatchWait[PersonID, Person](10*time.Millisecond),
+				WithBatchCapacity(batchSize), // Optimal batching
+				WithBatchWait(10*time.Millisecond),
 			)
-
-			defer dl.Stop()
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -150,11 +148,9 @@ func BenchmarkLatencyThroughput(b *testing.B) {
 
 			dl, _ := NewDataLoader(
 				WithMappedFetchFunc(fetchFunc),
-				WithBatchCapacity[PersonID, Person](batchSize),
-				WithBatchWait[PersonID, Person](10*time.Millisecond),
+				WithBatchCapacity(batchSize),
+				WithBatchWait(10*time.Millisecond),
 			)
-
-			defer dl.Stop()
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -171,7 +167,7 @@ func BenchmarkLatencyThroughput(b *testing.B) {
 				}
 
 				// Wait for all to complete
-				for j := 0; j < numRequests; j++ {
+				for range numRequests {
 					if err := <-results; err != nil {
 						b.Errorf("load failed: %v", err)
 					}
@@ -212,11 +208,9 @@ func BenchmarkScalability(b *testing.B) {
 
 			dl, _ := NewDataLoader(
 				WithMappedFetchFunc(fetchFunc),
-				WithBatchCapacity[PersonID, Person](tc.batchSize),
-				WithBatchWait[PersonID, Person](5*time.Millisecond),
+				WithBatchCapacity(tc.batchSize),
+				WithBatchWait(5*time.Millisecond),
 			)
-
-			defer dl.Stop()
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -258,11 +252,9 @@ func BenchmarkMemoryEfficiency_HighConcurrency(b *testing.B) {
 
 	dl, _ := NewDataLoader(
 		WithMappedFetchFunc(fetchFunc),
-		WithBatchCapacity[PersonID, Person](100),
-		WithBatchWait[PersonID, Person](2*time.Millisecond),
+		WithBatchCapacity(100),
+		WithBatchWait(2*time.Millisecond),
 	)
-
-	defer dl.Stop()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -284,9 +276,8 @@ func BenchmarkMappedFetch_ConcurrentLoad_Legacy(b *testing.B) {
 	metrics := &FetchMetrics{}
 	fetchFunc := createFastMappedFetch(metrics)
 
-	dl, _ := NewDataLoader[PersonID, Person](WithMappedFetchFunc(fetchFunc))
+	dl, _ := NewDataLoader(WithMappedFetchFunc(fetchFunc))
 
-	defer dl.Stop()
 	ctx := context.Background()
 	b.ResetTimer()
 
